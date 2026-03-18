@@ -568,3 +568,417 @@ final_df = pd.DataFrame({
                   for y in y_final]
 })
 st.dataframe(final_df, width='stretch', height=320)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PIPE 8 — VISUALIZAÇÃO DINÂMICA (canvas HTML/JS)
+# 4 quadros: rebote puro | empatia | antiempatia | antiempatia+OU
+# Linha 1: features (nós = variáveis do CSV)
+# Linha 2: usuários  (nós = linhas do CSV)
+# ══════════════════════════════════════════════════════════════════════════════
+import streamlit.components.v1 as components
+import json
+
+st.markdown('<div class="pipe-header">pipe 8 — visualização dinâmica · 4 quadros · features + usuários</div>',
+            unsafe_allow_html=True)
+st.caption("linha superior = features  ·  linha inferior = usuários/registros  ·  4 leis de movimento")
+
+# ── serializar dados para JS ──────────────────────────────────────────────────
+
+# FEATURES: posições PCA + pares antipáticos/simpáticos
+feat_nodes = []
+for k, feat in enumerate(feats):
+    feat_nodes.append({
+        "id":    k,
+        "label": feat[:12],
+        "x":     float(coords_init[k, 0]),
+        "y":     float(coords_init[k, 1]),
+        "y_int": float(y_hist[0][k]),
+        "var":   float(var_sizes[k])
+    })
+
+feat_anti = [[int(i), int(j), float(s)] for i,j,s in anti_pairs]
+feat_sym  = [[int(i), int(j), float(s)] for i,j,s in sym_pairs]
+
+# USUÁRIOS: PCA sobre linhas do CSV (transposta)
+X_rows = df_norm.values   # (n_rows, n_feats)
+X_rows_c = X_rows - X_rows.mean(axis=0, keepdims=True)
+try:
+    U, S_vals, Vt = np.linalg.svd(X_rows_c, full_matrices=False)
+    user_coords = U[:, :2] * S_vals[:2]
+except Exception:
+    np.random.seed(42)
+    user_coords = np.random.randn(len(df_norm), 2)
+
+# normalise user coords to [-1,1]
+for ax in range(2):
+    rng = user_coords[:, ax].max() - user_coords[:, ax].min()
+    if rng > 0:
+        user_coords[:, ax] = (user_coords[:, ax] - user_coords[:, ax].min()) / rng * 2 - 1
+
+# user antipathy: rows with bought=Y antipathise rows with bought=N
+user_nodes = []
+for k in range(len(df_norm)):
+    bought = float(df_raw.iloc[k].get('bought', 'N') == 'Y') if 'bought' in df_raw.columns else 0.5
+    user_nodes.append({
+        "id":    k,
+        "label": f"u{k+1}",
+        "x":     float(user_coords[k, 0]),
+        "y":     float(user_coords[k, 1]),
+        "y_int": float(bought * 0.8 + 0.2),
+        "bought": bool(bought > 0.5)
+    })
+
+# user antipathy pairs: bought=Y vs bought=N (nearest cross pairs)
+user_anti = []
+buyers    = [n for n in user_nodes if n["bought"]]
+nonbuyers = [n for n in user_nodes if not n["bought"]]
+for b in buyers:
+    dists = sorted(nonbuyers,
+                   key=lambda nb: (nb["x"]-b["x"])**2+(nb["y"]-b["y"])**2)
+    for nb in dists[:2]:
+        user_anti.append([b["id"], nb["id"], 0.75])
+
+user_sym = []
+for i in range(len(user_nodes)):
+    for j in range(i+1, len(user_nodes)):
+        if user_nodes[i]["bought"] == user_nodes[j]["bought"]:
+            d = ((user_nodes[i]["x"]-user_nodes[j]["x"])**2 +
+                 (user_nodes[i]["y"]-user_nodes[j]["y"])**2)**0.5
+            if d < 0.6:
+                user_sym.append([i, j, max(0, 1-d/0.6)*0.6])
+
+# pass λ from sidebar
+lam_js = float(lam)
+
+html_canvas = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ background:#06000e; font-family:'Courier New',monospace; }}
+.row-label {{
+  color:rgba(180,140,200,0.5); font-size:10px; letter-spacing:0.12em;
+  text-align:center; padding:4px 0 2px;
+}}
+.grid {{
+  display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; padding:6px;
+}}
+.cell {{ display:flex; flex-direction:column; }}
+.col-label {{
+  font-size:9px; color:rgba(150,100,180,0.45); text-align:center;
+  letter-spacing:0.08em; padding:2px 0 1px; text-transform:uppercase;
+}}
+canvas {{
+  display:block; width:100%; border-radius:6px;
+  background:#06000e; border:0.5px solid #1a0828;
+}}
+.formula {{
+  font-size:8px; color:rgba(200,140,180,0.35); text-align:center;
+  padding:1px 0 4px; letter-spacing:0.04em;
+}}
+</style>
+</head>
+<body>
+
+<div class="row-label">FEATURES — cada ponto é uma variável do CSV</div>
+<div class="grid" id="feat-grid">
+  <div class="cell">
+    <div class="col-label">I rebote puro</div>
+    <canvas id="f0" height="180"></canvas>
+    <div class="formula">ẋ = v₀</div>
+  </div>
+  <div class="cell">
+    <div class="col-label">II empatia</div>
+    <canvas id="f1" height="180"></canvas>
+    <div class="formula">y += λ·cov</div>
+  </div>
+  <div class="cell">
+    <div class="col-label">III antiempatia</div>
+    <canvas id="f2" height="180"></canvas>
+    <div class="formula">y -= λ·|cov|</div>
+  </div>
+  <div class="cell">
+    <div class="col-label">IV antiempatia + η(t)</div>
+    <canvas id="f3" height="180"></canvas>
+    <div class="formula">y -= λ·|cov| + η(t)</div>
+  </div>
+</div>
+
+<div class="row-label" style="margin-top:4px;">USUÁRIOS — cada ponto é um registro do CSV</div>
+<div class="grid" id="user-grid">
+  <div class="cell">
+    <canvas id="u0" height="180"></canvas>
+    <div class="formula">ẋ = v₀</div>
+  </div>
+  <div class="cell">
+    <canvas id="u1" height="180"></canvas>
+    <div class="formula">y += λ·cov</div>
+  </div>
+  <div class="cell">
+    <canvas id="u2" height="180"></canvas>
+    <div class="formula">y -= λ·|cov|</div>
+  </div>
+  <div class="cell">
+    <canvas id="u3" height="180"></canvas>
+    <div class="formula">y -= λ·|cov| + η(t)</div>
+  </div>
+</div>
+
+<script>
+const LAM   = {lam_js};
+const WIN   = 8;
+const THETA = 0.05;
+const SIGMA = 0.009;
+const ALPHA = 0.055;
+const BETA  = 0.025;
+const MAX_SPD = 0.04;
+const R_SEP   = 0.28;
+const R_REP   = 0.9;
+const R_ALI   = 0.9;
+
+const featNodesRaw = {json.dumps(feat_nodes)};
+const featAnti     = {json.dumps(feat_anti)};
+const featSym      = {json.dumps(feat_sym)};
+const userNodesRaw = {json.dumps(user_nodes)};
+const userAnti     = {json.dumps(user_anti)};
+const userSym      = {json.dumps(user_sym)};
+
+function randn() {{
+  let u=0,v=0; while(!u)u=Math.random(); while(!v)v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+}}
+
+function cloneSim(raw) {{
+  return raw.map(n => ({{
+    ...n,
+    x: n.x * 0.7,
+    y: n.y * 0.7,
+    vx: (Math.random()-.5)*0.015,
+    vy: (Math.random()-.5)*0.015,
+    obs: [], yH: [],
+    nx: 0, ny: 0
+  }}));
+}}
+
+function computeCov(a, b) {{
+  const n=a.length; if(n<2) return 0;
+  const ma=a.reduce((s,v)=>s+v,0)/n, mb=b.reduce((s,v)=>s+v,0)/n;
+  return a.reduce((s,v,i)=>s+(v-ma)*(b[i]-mb),0)/n;
+}}
+
+// 4 simulations per row: mode 0=plain 1=empathy 2=anti 3=anti+OU
+function makeSims(raw) {{
+  return [0,1,2,3].map(() => cloneSim(raw));
+}}
+
+const featSims = makeSims(featNodesRaw);
+const userSims = makeSims(userNodesRaw);
+
+// OU noise per simulation
+const ouState = Array.from({{length:8}}, ()=>([0,0]));
+
+function stepSim(nodes, mode, ouIdx, antiPairs, symPairs) {{
+  const n = nodes.length;
+  // OU
+  ouState[ouIdx][0] = ouState[ouIdx][0]*(1-THETA) + SIGMA*randn();
+  ouState[ouIdx][1] = ouState[ouIdx][1]*(1-THETA) + SIGMA*randn();
+  const ou = ouState[ouIdx];
+
+  // internal state update
+  nodes.forEach((nd, i) => {{
+    const o_t = (nd.x + nd.y) / 2;
+    nd.obs.push(o_t); if(nd.obs.length > WIN) nd.obs.shift();
+    nd.yH.push(nd.y_int); if(nd.yH.length > WIN) nd.yH.shift();
+    const c = computeCov(nd.yH, nd.obs);
+    if(mode === 1) nd.y_int = Math.min(1, Math.max(0, nd.y_int + LAM*c));
+    if(mode >= 2)  nd.y_int = Math.max(0, nd.y_int - LAM*Math.abs(c));
+  }});
+
+  const forces = nodes.map(() => [0,0]);
+
+  // proteção: repulsão antipática escalada por y_int
+  antiPairs.forEach(([i,j,s]) => {{
+    if(i>=n||j>=n) return;
+    const dx=nodes[j].x-nodes[i].x, dy=nodes[j].y-nodes[i].y;
+    const d=Math.sqrt(dx*dx+dy*dy)+1e-6;
+    if(d<R_REP) {{
+      const f=(mode>=2?nodes[i].y_int:0.4)*s*(1-d/R_REP)*0.06;
+      forces[i][0]-=(dx/d)*f; forces[i][1]-=(dy/d)*f;
+      forces[j][0]+=(dx/d)*f*(mode>=2?nodes[j].y_int:0.4);
+      forces[j][1]+=(dy/d)*f*(mode>=2?nodes[j].y_int:0.4);
+    }}
+  }});
+
+  // coesão: alinhamento
+  if(mode===1||mode===3) {{
+    nodes.forEach((nd, i) => {{
+      let avx=0,avy=0,cnt=0;
+      symPairs.forEach(([ii,jj,s]) => {{
+        const p = ii===i?jj:(jj===i?ii:-1);
+        if(p>=0&&p<n){{avx+=nodes[p].vx;avy+=nodes[p].vy;cnt++;}}
+      }});
+      if(cnt>0){{forces[i][0]+=ALPHA*(avx/cnt-nd.vx);forces[i][1]+=ALPHA*(avy/cnt-nd.vy);}}
+    }});
+  }}
+
+  // espaço: separação
+  nodes.forEach((a,i) => {{
+    nodes.forEach((b,j) => {{
+      if(j<=i) return;
+      const dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)+1e-6;
+      if(d<R_SEP){{
+        const f=BETA*(R_SEP-d)/d;
+        forces[i][0]-=dx*f; forces[i][1]-=dy*f;
+        forces[j][0]+=dx*f; forces[j][1]+=dy*f;
+      }}
+    }});
+  }});
+
+  // simpatia
+  symPairs.forEach(([i,j,s]) => {{
+    if(i>=n||j>=n) return;
+    const dx=nodes[j].x-nodes[i].x, dy=nodes[j].y-nodes[i].y;
+    const d=Math.sqrt(dx*dx+dy*dy)+1e-6;
+    if(mode===1){{
+      forces[i][0]+=(dx/d)*s*0.02; forces[i][1]+=(dy/d)*s*0.02;
+      forces[j][0]-=(dx/d)*s*0.02; forces[j][1]-=(dy/d)*s*0.02;
+    }}
+  }});
+
+  // vida: OU (mode 3 + partial in mode 0)
+  nodes.forEach((nd,i) => {{
+    const ouScale = mode===3 ? (0.5+0.5*(1-nd.y_int)) : (mode===0 ? 0.0 : 0.0);
+    forces[i][0] += ou[0]*ouScale;
+    forces[i][1] += ou[1]*ouScale;
+  }});
+
+  // apply
+  nodes.forEach((nd,i) => {{
+    nd.vx = (nd.vx + forces[i][0]) * 0.92;
+    nd.vy = (nd.vy + forces[i][1]) * 0.92;
+    const spd = Math.sqrt(nd.vx**2+nd.vy**2);
+    if(spd>MAX_SPD){{nd.vx=nd.vx/spd*MAX_SPD;nd.vy=nd.vy/spd*MAX_SPD;}}
+    nd.x += nd.vx; nd.y += nd.vy;
+    if(nd.x<-1.4){{nd.x=-1.4;nd.vx*=-0.7;}}
+    if(nd.x> 1.4){{nd.x= 1.4;nd.vx*=-0.7;}}
+    if(nd.y<-1.4){{nd.y=-1.4;nd.vy*=-0.7;}}
+    if(nd.y> 1.4){{nd.y= 1.4;nd.vy*=-0.7;}}
+    nd.pulse = (nd.pulse||0) + 0.022;
+  }});
+}}
+
+function renderSim(canvas, nodes, mode, antiPairs, symPairs) {{
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const BG='#06000e', ANTI='#ff4060', SYM='#40d0a0', TXT='rgba(200,170,220,0.7)';
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
+
+  function toScreen(x,y){{return [(x+1.5)/3*W, (y+1.5)/3*H];}}
+
+  // edges
+  antiPairs.forEach(([i,j,s]) => {{
+    if(i>=nodes.length||j>=nodes.length) return;
+    const [x0,y0]=toScreen(nodes[i].x,nodes[i].y);
+    const [x1,y1]=toScreen(nodes[j].x,nodes[j].y);
+    const alpha = Math.min(s*0.55, 0.5);
+    ctx.save(); ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1);
+    ctx.strokeStyle=`rgba(255,60,80,${{alpha}})`; ctx.lineWidth=0.7; ctx.stroke();
+    ctx.restore();
+  }});
+
+  symPairs.forEach(([i,j,s]) => {{
+    if(i>=nodes.length||j>=nodes.length) return;
+    const [x0,y0]=toScreen(nodes[i].x,nodes[i].y);
+    const [x1,y1]=toScreen(nodes[j].x,nodes[j].y);
+    if(mode===1){{
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1);
+      ctx.strokeStyle=`rgba(64,208,160,${{s*0.3}})`; ctx.lineWidth=0.5; ctx.stroke();
+    }}
+  }});
+
+  // nodes
+  nodes.forEach(nd => {{
+    const [sx,sy] = toScreen(nd.x, nd.y);
+    const s  = nd.y_int;
+    const g  = 0.55 + 0.45*Math.sin(nd.pulse||0);
+    const sz = 3 + (nd.var||0.5)*5;
+    const isAnti = mode>=2;
+
+    // halo
+    const hR = sz*(1.4+s*2.5);
+    const gr = ctx.createRadialGradient(sx,sy,0,sx,sy,hR);
+    if(isAnti){{
+      gr.addColorStop(0,`rgba(255,${{Math.round(60-s*30)}},80,${{(0.05+s*0.13)*g}})`);
+      gr.addColorStop(1,'rgba(80,5,10,0)');
+    }} else if(mode===1){{
+      gr.addColorStop(0,`rgba(${{Math.round(120+s*80)}},${{Math.round(80+s*100)}},255,${{(0.06+s*0.10)*g}})`);
+      gr.addColorStop(1,'rgba(20,10,80,0)');
+    }} else {{
+      gr.addColorStop(0,`rgba(180,120,255,${{0.10*g}})`);
+      gr.addColorStop(1,'rgba(60,20,120,0)');
+    }}
+    ctx.beginPath(); ctx.arc(sx,sy,hR,0,Math.PI*2);
+    ctx.fillStyle=gr; ctx.fill();
+
+    // core
+    ctx.beginPath(); ctx.arc(sx,sy,sz,0,Math.PI*2);
+    const ir=ctx.createRadialGradient(sx-sz*.3,sy-sz*.3,0,sx,sy,sz);
+    if(isAnti){{
+      ir.addColorStop(0,`rgba(255,${{Math.round(80+s*60)}},${{Math.round(60+s*40)}},${{(0.5+s*0.5)*g}})`);
+      ir.addColorStop(1,`rgba(${{Math.round(160-s*40)}},30,30,${{0.4*g}})`);
+    }} else if(mode===1){{
+      ir.addColorStop(0,`rgba(${{Math.round(140+s*80)}},${{Math.round(100+s*100)}},255,${{(0.6+s*0.4)*g}})`);
+      ir.addColorStop(1,`rgba(60,30,${{Math.round(180+s*60)}},${{0.4*g}})`);
+    }} else {{
+      ir.addColorStop(0,`rgba(200,160,255,${{0.75*g}})`);
+      ir.addColorStop(1,'rgba(80,40,160,0.4)');
+    }}
+    ctx.fillStyle=ir; ctx.fill();
+
+    // label
+    if(sz > 4){{
+      ctx.fillStyle=TXT; ctx.font=`${{Math.max(6,sz*0.9)}}px Courier New`;
+      ctx.textAlign='center';
+      ctx.fillText(nd.label||'', sx, sy-sz-2);
+    }}
+  }});
+
+  // mode watermark
+  const modeLabels=['rebote','empatia','antiempatia','anti+η(t)'];
+  ctx.fillStyle='rgba(150,80,130,0.2)'; ctx.font='8px Courier New';
+  ctx.textAlign='left';
+  ctx.fillText(modeLabels[mode]||'', 4, H-4);
+}}
+
+// setup canvases
+const featCanvases = [0,1,2,3].map(i => document.getElementById('f'+i));
+const userCanvases = [0,1,2,3].map(i => document.getElementById('u'+i));
+
+// set pixel width after layout
+function resizeAll() {{
+  [...featCanvases,...userCanvases].forEach(c => {{
+    c.width = c.offsetWidth || 160;
+  }});
+}}
+setTimeout(resizeAll, 100);
+
+function loop() {{
+  [0,1,2,3].forEach(mode => {{
+    stepSim(featSims[mode], mode, mode,   featAnti, featSym);
+    stepSim(userSims[mode], mode, mode+4, userAnti, userSym);
+    renderSim(featCanvases[mode], featSims[mode], mode, featAnti, featSym);
+    renderSim(userCanvases[mode], userSims[mode], mode, userAnti, userSym);
+  }});
+  requestAnimationFrame(loop);
+}}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
+"""
+
+components.html(html_canvas, height=520, scrolling=False)
