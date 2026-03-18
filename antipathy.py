@@ -116,7 +116,8 @@ def pipe2_bigbang(df_norm, projection='pca'):
         cov_mat = Xc @ Xc.T / max(X.shape[1]-1, 1)
         vals, vecs = np.linalg.eigh(cov_mat)
         idx = np.argsort(vals)[::-1]
-        coords = Xc @ vecs[:, idx[:2]]
+        # eigenvectors directly give feat positions in PC space
+        coords = vecs[:, idx[:2]]
     else:
         corr = np.corrcoef(X)
         np.fill_diagonal(corr, 1.0)
@@ -131,7 +132,7 @@ def pipe2_bigbang(df_norm, projection='pca'):
 
     # normalise coords to [-1,1]
     for ax in range(2):
-        rng = coords[:,ax].ptp()
+        rng = (coords[:,ax].max() - coords[:,ax].min())
         if rng > 0:
             coords[:,ax] = (coords[:,ax]-coords[:,ax].min())/rng*2-1
 
@@ -492,15 +493,15 @@ for col_ui, label, val, clr in [
     </div>""", unsafe_allow_html=True)
 
 with st.expander("ver dataframe normalizado"):
-    st.dataframe(df_norm.round(3), use_container_width=True, height=200)
+    st.dataframe(df_norm.round(3), width='stretch', height=200)
 
 # PIPE 2
 st.markdown('<div class="pipe-header">pipe 2 — big bang: projeção das features</div>',
             unsafe_allow_html=True)
 feats, coords_init, vel_init, corr_matrix = pipe2_bigbang(df_norm, projection)
 var_sizes = df_norm.var().values
-if var_sizes.ptp() > 0:
-    var_sizes = (var_sizes - var_sizes.min()) / var_sizes.ptp()
+if (var_sizes.max() - var_sizes.min()) > 0:
+    var_sizes = (var_sizes - var_sizes.min()) / (var_sizes.max() - var_sizes.min())
 
 st.caption(f"{len(feats)} features projetadas  ·  big bang σ=0.015  ·  projeção: {projection.upper()}")
 
@@ -534,13 +535,13 @@ st.markdown('<div class="pipe-header">pipe 4 — visualização antiempática (m
             unsafe_allow_html=True)
 fig = make_figure(feats, traj, y_hist, anti_pairs, sym_pairs,
                   show_mode=show_mode, var_sizes=var_sizes)
-st.pyplot(fig, use_container_width=True)
+st.pyplot(fig, width='stretch')
 
 # PIPE 5 — EVOLUÇÃO y_t
 st.markdown('<div class="pipe-header">pipe 5 — drenagem de y_t por feature</div>',
             unsafe_allow_html=True)
 evo = pd.DataFrame(np.array(y_hist), columns=feats)
-st.line_chart(evo, height=210, use_container_width=True)
+st.line_chart(evo, height=210, width='stretch')
 
 # PIPE 6 — INSIGHTS
 st.markdown('<div class="pipe-header">pipe 6 — insights heurísticos</div>',
@@ -566,4 +567,4 @@ final_df = pd.DataFrame({
     'status':    ['colapsou' if y<0.12 else ('estável' if y>0.5 else 'drenando')
                   for y in y_final]
 })
-st.dataframe(final_df, use_container_width=True, height=320)
+st.dataframe(final_df, width='stretch', height=320)
