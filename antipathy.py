@@ -277,11 +277,52 @@ def pipe3_apinn(feats, coords_init, vel_init, corr_matrix,
 # ══════════════════════════════════════════════════════════════════════════════
 # VISUALIZAÇÃO MATPLOTLIB
 # ══════════════════════════════════════════════════════════════════════════════
+def assign_clusters(feats):
+    """
+    Atribui cada feature a um cluster semântico baseado no nome.
+    Retorna (cluster_id, cluster_name, marker, color) por feature.
+    """
+    rules = [
+        # (palavras-chave,  id, nome legível,      marker, cor)
+        (['bought','compra','purchase','sale','venda'],
+         0, 'compra',      'D', '#ff6090'),   # diamante rosa
+        (['cart','carrinho','basket','add'],
+         1, 'carrinho',    's', '#ffa040'),   # quadrado laranja
+        (['read','leu','time','min','session','tempo'],
+         2, 'engajamento', 'o', '#60c0ff'),   # círculo azul
+        (['interact','click','clique','action','acao'],
+         3, 'interação',   '^', '#80ff90'),   # triângulo verde
+        (['geo','pais','country','region','loc','br','us','in'],
+         4, 'localização', 'P', '#c080ff'),   # plus roxo
+        (['device','mobile','desktop','tablet'],
+         5, 'dispositivo', 'h', '#ffee60'),   # hexágono amarelo
+        (['traffic','source','organic','ads','email','social'],
+         6, 'canal',       '*', '#ff9060'),   # estrela coral
+        (['age','idade','ano','year'],
+         7, 'perfil',      'v', '#60ffe0'),   # triângulo inv teal
+        (['value','valor','price','revenue','ticket'],
+         8, 'valor',       'X', '#ff60c0'),   # X magenta
+    ]
+    assignments = []
+    for feat in feats:
+        fl = feat.lower()
+        matched = False
+        for keywords, cid, cname, marker, color in rules:
+            if any(kw in fl for kw in keywords):
+                assignments.append((cid, cname, marker, color))
+                matched = True
+                break
+        if not matched:
+            assignments.append((9, 'outros', 'o', '#aaaaaa'))
+    return assignments
+
 def make_figure(feats, traj, y_hist, antipathy_pairs, sympathy_pairs,
                 show_mode='both', var_sizes=None):
-    BG='#07000f'; ANTI='#ff4060'; SYM='#40d0a0'; TXT='#c0a8b8'
+    BG='#07000f'; ANTI='#ff4060'; SYM='#40d0a0'; TXT='#d0b8c8'
     if var_sizes is None:
         var_sizes = np.ones(len(feats))
+
+    clusters = assign_clusters(feats)
 
     panels_spec = {
         'both':   [('antes do A-PINN',   traj[0],  y_hist[0]),
@@ -291,89 +332,185 @@ def make_figure(feats, traj, y_hist, antipathy_pairs, sympathy_pairs,
     }[show_mode]
 
     ncols = len(panels_spec)
-    fig, axes = plt.subplots(1, ncols, figsize=(7*ncols, 6), facecolor=BG)
+    # figura maior para legibilidade
+    fig, axes = plt.subplots(1, ncols, figsize=(10*ncols, 9), facecolor=BG)
     if ncols == 1:
         axes = [axes]
 
     for ax, (title, coords, y_cur) in zip(axes, panels_spec):
         ax.set_facecolor(BG)
         for sp in ax.spines.values(): sp.set_edgecolor('#2a1a3a')
-        ax.tick_params(colors='#3a2a4a', labelsize=7)
+        ax.tick_params(colors='#3a2a4a', labelsize=8)
 
-        # linhas antipáticas
+        # ── zoom automático: tight bounds com padding ────────────────
+        pad = 0.25
+        xmin,xmax = coords[:,0].min()-pad, coords[:,0].max()+pad
+        ymin,ymax = coords[:,1].min()-pad, coords[:,1].max()+pad
+        ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
+
+        # ── linhas antipáticas ───────────────────────────────────────
         for (i, j, s) in antipathy_pairs:
-            x0,y0 = coords[i]; x1,y1 = coords[j]
+            x0,y0=coords[i]; x1,y1=coords[j]
             ax.plot([x0,x1],[y0,y1], color=ANTI,
-                    alpha=min(s*0.65,0.55), lw=0.9, ls='--', zorder=1)
+                    alpha=min(s*0.6,0.5), lw=1.1, ls='--', zorder=1)
             mid = np.array([(x0+x1)/2,(y0+y1)/2])
-            dv  = np.array([x0-x1, y0-y1])
+            dv  = np.array([x0-x1,y0-y1])
             dn  = np.linalg.norm(dv)+1e-6
-            ax.annotate('', xy=mid+dv/dn*0.09, xytext=mid,
-                        arrowprops=dict(arrowstyle='->',color=ANTI,lw=0.7,alpha=0.5))
+            span = max(xmax-xmin, ymax-ymin)
+            ax.annotate('', xy=mid+dv/dn*span*0.04, xytext=mid,
+                        arrowprops=dict(arrowstyle='->',color=ANTI,lw=0.8,alpha=0.55))
 
-        # linhas simpáticas
+        # ── linhas simpáticas ────────────────────────────────────────
         for (i, j, s) in sympathy_pairs:
             x0,y0=coords[i]; x1,y1=coords[j]
             ax.plot([x0,x1],[y0,y1], color=SYM,
-                    alpha=min(s*0.35,0.3), lw=0.5, ls=':', zorder=1)
+                    alpha=min(s*0.4,0.35), lw=0.7, ls=':', zorder=1)
 
-        # nós — cor encoda y_int
-        sizes = 70 + var_sizes*280
-        node_colors = []
-        for k in range(len(feats)):
-            s = y_cur[k]
-            r = int(min(255, 180+s*75))
-            g = int(min(255, 40+s*60))
-            b = int(min(255, 90+s*100))
-            node_colors.append(f'#{r:02x}{g:02x}{b:02x}')
-
-        ax.scatter(coords[:,0], coords[:,1], s=sizes, c=node_colors,
-                   edgecolors='#2a1030', linewidths=0.5, zorder=3, alpha=0.93)
+        # ── nós: forma por cluster, tamanho por variância ────────────
+        sizes = 180 + var_sizes * 500   # maiores para melhor leitura
 
         for k, feat in enumerate(feats):
-            lbl = feat[:13]+('…' if len(feat)>13 else '')
-            ax.text(coords[k,0], coords[k,1]+0.07, lbl,
-                    fontsize=6.5, color=TXT, ha='center', va='bottom',
-                    fontfamily='monospace', zorder=4)
-            ax.text(coords[k,0], coords[k,1]-0.08,
-                    f'y={y_cur[k]:.2f}',
-                    fontsize=5.5, color='#7a507a', ha='center', va='top', zorder=4)
+            cid, cname, marker, ccolor = clusters[k]
+            sz  = sizes[k]
+            yv  = y_cur[k]
+            # borda mais grossa quando y_int alto (campo ativo)
+            ew  = 0.5 + yv * 2.0
+            # alpha encoda y_int
+            al  = 0.55 + yv * 0.45
 
-        ax.set_title(title, color='#9a6080', fontsize=9,
-                     fontfamily='monospace', pad=8)
-        ax.set_xlabel('componente 1', color='#4a3050', fontsize=7)
-        ax.set_ylabel('componente 2', color='#4a3050', fontsize=7)
-        ax.set_xlim(-1.8, 1.8); ax.set_ylim(-1.8, 1.8)
+            ax.scatter(coords[k,0], coords[k,1],
+                       s=sz, marker=marker, c=ccolor,
+                       edgecolors='white', linewidths=ew,
+                       alpha=al, zorder=3)
 
-    patches = [
-        mpatches.Patch(color=ANTI, label='antipatia  y_t·F_rep  (proteção)'),
-        mpatches.Patch(color=SYM,  label='simpatia  α(v̄−v) + β·sep  (coesão+espaço)'),
-        mpatches.Patch(color='#b060d0', label='nó: tamanho=variância  |  cor=y_t'),
-    ]
-    fig.legend(handles=patches, loc='lower center', ncol=3,
-               facecolor='#0d0420', edgecolor='#2a1030',
-               labelcolor=TXT, fontsize=7.5, framealpha=0.85)
-    fig.tight_layout(rect=[0,0.07,1,1])
+            # nome da feature — fonte maior, offset adaptado ao tamanho
+            span = max(xmax-xmin, ymax-ymin)
+            offset = span * 0.04 + np.sqrt(sz)/90
+            lbl = feat.replace('_', ' ')
+            ax.text(coords[k,0], coords[k,1]+offset, lbl,
+                    fontsize=8, color=TXT, ha='center', va='bottom',
+                    fontfamily='monospace', fontweight='bold', zorder=5)
+            # y_int value abaixo
+            ax.text(coords[k,0], coords[k,1]-offset*0.8,
+                    f'y={yv:.2f}',
+                    fontsize=7, color=ccolor, ha='center', va='top',
+                    alpha=0.75, zorder=5)
+
+        ax.set_title(title, color='#b07090', fontsize=11,
+                     fontfamily='monospace', fontweight='bold', pad=12)
+        ax.set_xlabel('componente principal 1', color='#5a3060', fontsize=9)
+        ax.set_ylabel('componente principal 2', color='#5a3060', fontsize=9)
+        ax.grid(True, color='#1a0828', linewidth=0.4, alpha=0.5)
+
+    # ── legenda unificada: clusters + linhas ─────────────────────────
+    seen = {}
+    for cid,cname,marker,ccolor in clusters:
+        if cid not in seen:
+            seen[cid] = ax.scatter([],[], marker=marker, c=ccolor,
+                                   s=100, label=f'cluster: {cname}',
+                                   edgecolors='white', linewidths=0.8)
+    line_anti = plt.Line2D([],[], color=ANTI, ls='--', lw=1.2,
+                            label='antipatia — se repelem')
+    line_sym  = plt.Line2D([],[], color=SYM,  ls=':',  lw=1.0,
+                            label='simpatia — se atraem')
+    size_note = mpatches.Patch(color='#5a4060', alpha=0.6,
+                               label='tamanho = variância da feature')
+    handles = list(seen.values()) + [line_anti, line_sym, size_note]
+    fig.legend(handles=handles, loc='lower center',
+               ncol=min(len(handles), 5),
+               facecolor='#0d0420', edgecolor='#3a1a4a',
+               labelcolor=TXT, fontsize=8.5, framealpha=0.9,
+               markerscale=1.2)
+    fig.tight_layout(rect=[0, 0.09, 1, 1])
     return fig
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INSIGHTS HEURÍSTICOS
 # ══════════════════════════════════════════════════════════════════════════════
-def make_insights(feats, antipathy_pairs, sympathy_pairs, y_final):
+def make_insights(feats, antipathy_pairs, sympathy_pairs, y_final, corr_matrix=None):
+    """
+    Gera insights em linguagem simples — estilo 'João da Roça':
+    explica o que fazer e por que, sem jargão técnico.
+    """
     out = []
-    for i,j,s in sorted(antipathy_pairs, key=lambda x:-x[2])[:8]:
+
+    # ── helpers ──────────────────────────────────────────────────────
+    def clean(f):
+        """nome legível: remove prefixo one-hot, substitui _ por espaço"""
+        # ex: traffic_source_email → email (canal)
+        parts = f.split('_')
+        if len(parts) > 2 and parts[0] == parts[0]:
+            return ' '.join(parts[-2:]).replace('_',' ')
+        return f.replace('_', ' ')
+
+    def strength_word(s):
+        if s > 0.7: return "muito forte"
+        if s > 0.45: return "forte"
+        if s > 0.2: return "moderada"
+        return "fraca"
+
+    def corr_word(c):
+        if c > 0.7: return "andam sempre juntos"
+        if c > 0.4: return "costumam aparecer juntos"
+        if c > 0.2: return "têm alguma relação"
+        return "às vezes aparecem juntos"
+
+    def why_separate(fi, fj, s, yi, yj):
+        """Explica em português simples por que separar."""
+        sw = strength_word(s)
+        return (
+            f"Esses dois comportamentos se anulam — quando um aparece forte, "
+            f"o outro tende a enfraquecer (antipatia {sw}). "
+            f"Se você misturar esses grupos na mesma campanha ou oferta, "
+            f"vai desperdiçar esforço: o que funciona para um atrapalha o outro. "
+            f"Trate cada perfil separado."
+        )
+
+    def why_attract(fi, fj, s):
+        """Explica em português simples por que aproximar."""
+        cw = corr_word(s)
+        return (
+            f"Quem faz '{clean(fi)}' também {cw} '{clean(fj)}'. "
+            f"Use isso a seu favor: quando detectar um comportamento, "
+            f"espere ou incentive o outro também. "
+            f"Eles caminham juntos nos seus dados."
+        )
+
+    def why_collapsed(feat, yv):
+        return (
+            f"Esse ponto perdeu força no sistema — "
+            f"significa que '{clean(feat)}' sozinho não explica muita coisa. "
+            f"Ele é engolido pelos comportamentos opostos ao redor. "
+            f"Considere combinar com outra informação para ter mais clareza."
+        )
+
+    # ── SEPARAÇÕES (antipatia) ────────────────────────────────────────
+    for i,j,s in sorted(antipathy_pairs, key=lambda x:-x[2])[:6]:
+        fi, fj = feats[i], feats[j]
         out.append(('anti',
-            f"SEPARE  {feats[i]}  ↔  {feats[j]}",
-            f"força antiempática = {s:.3f}  |  y_final: {y_final[i]:.2f} / {y_final[j]:.2f}"))
-    for i,j,s in sorted(sympathy_pairs, key=lambda x:-x[2])[:5]:
+            f"↔ Separe: '{clean(fi)}'  ×  '{clean(fj)}'",
+            why_separate(fi, fj, s, y_final[i], y_final[j]),
+            f"força = {s:.2f}  ·  y: {y_final[i]:.2f} / {y_final[j]:.2f}"
+        ))
+
+    # ── APROXIMAÇÕES (simpatia) ───────────────────────────────────────
+    for i,j,s in sorted(sympathy_pairs, key=lambda x:-x[2])[:4]:
+        fi, fj = feats[i], feats[j]
         out.append(('sym',
-            f"APROXIME  {feats[i]}  ↔  {feats[j]}",
-            f"correlação = +{s:.3f}"))
-    for k,feat in enumerate(feats):
+            f"↑ Combine: '{clean(fi)}'  +  '{clean(fj)}'",
+            why_attract(fi, fj, s),
+            f"correlação = +{s:.2f}"
+        ))
+
+    # ── COLAPSADAS ────────────────────────────────────────────────────
+    for k, feat in enumerate(feats):
         if y_final[k] < 0.12:
             out.append(('collapse',
-                f"COLAPSOU  {feat}",
-                f"y_t = {y_final[k]:.3f}  — coerência esgotada pela antiempatia"))
+                f"⊘ Atenção: '{clean(feat)}' perdeu relevância",
+                why_collapsed(feat, y_final[k]),
+                f"y_t = {y_final[k]:.3f}"
+            ))
+
     return out
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -546,13 +683,19 @@ st.line_chart(evo, height=210, width='stretch')
 # PIPE 6 — INSIGHTS
 st.markdown('<div class="pipe-header">pipe 6 — insights heurísticos</div>',
             unsafe_allow_html=True)
-for kind, msg, detail in make_insights(feats, anti_pairs, sym_pairs, y_final):
+for kind, msg, explanation, detail in make_insights(feats, anti_pairs, sym_pairs, y_final):
     cls = {'anti':'insight-card','sym':'insight-card attract',
            'collapse':'insight-card collapse'}[kind]
-    icon = {'anti':'↔ ','sym':'↑ ','collapse':'⊘ '}[kind]
-    st.markdown(f"""<div class='{cls}'>
-    <b>{icon}{msg}</b><br>
-    <span style='color:#5a3a5a;font-size:10px;'>{detail}</span>
+    border = {'anti':'#c04080','sym':'#40a080','collapse':'#804000'}[kind]
+    icon_color = {'anti':'#ff80a0','sym':'#40d0a0','collapse':'#c08040'}[kind]
+    st.markdown(f"""
+    <div style='background:#0d0415;border-left:2px solid {border};
+                border-radius:0 8px 8px 0;padding:12px 16px;margin:8px 0;'>
+      <div style='font-size:13px;font-weight:500;color:{icon_color};
+                  margin-bottom:6px;'>{msg}</div>
+      <div style='font-size:12px;color:#c0a8b8;line-height:1.7;
+                  margin-bottom:6px;'>{explanation}</div>
+      <div style='font-size:10px;color:#5a3a5a;font-family:monospace;'>{detail}</div>
     </div>""", unsafe_allow_html=True)
 
 # PIPE 7 — TABELA FINAL
